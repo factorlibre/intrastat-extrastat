@@ -27,11 +27,15 @@ This module conflicts with the module *report_intrastat* from the official addon
 If you have already installed the module *report_intrastat*,
 you should uninstall it before installing this module.
 
+This module has been modified to NOT compute Invoice fields Origin/Destination Region and Intrastat Country at install. You may recompute existing invoices through the wizard Recompute Intrastat Country.
+
 Usage
 =====
 
 This module is used in combination with the country-specific
 localization module(s).
+
+You may recompute manually the fields Origin/Destination Region and Intrastat Country manually for selected invoices.
 
 Coding guidelines for localization module:
 ------------------------------------------
@@ -88,6 +92,7 @@ Contributors
 * Alexis de Lattre, Akretion <alexis.delattre@akretion.com>
 * Luc De Meyer, Noviat <info@noviat.com>
 * Rodrigo Bonilla, FactorLibre <rodrigo.bonilla@factorlibre.com>
+* Luis J. Salvatierra <luis.salvatierra@factorlibre.com>
 
 Maintainer
 ----------

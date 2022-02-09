@@ -1,13 +1,14 @@
 # Copyright 2011-2017 Akretion (http://www.akretion.com)
 # Copyright 2009-2019 Noviat (http://www.noviat.com)
 # Copyright 2018 brain-tec AG (http://www.braintec-group.com)
+# Copyright 2022 FactorLibre - Luis J. Salvatierra <luis.salvatierra@factorlibre.com>
 # @author Alexis de Lattre <alexis.delattre@akretion.com>
 # @author Luc de Meyer <info@noviat.com>
 # @author Kumar Aberer <kumar.aberer@braintec-group.com>
 
 {
     'name': 'Intrastat Product',
-    'version': '11.0.1.2.0',
+    'version': '11.0.1.3.0',
     'category': 'Intrastat',
     'license': 'AGPL-3',
     'summary': 'Base module for Intrastat Product',
@@ -36,7 +37,9 @@
         'security/ir.model.access.csv',
         'data/intrastat_transport_mode.xml',
         'data/intrastat_unit.xml',
+        'wizard/recompute_intrastat_country_views.xml'
     ],
     'demo': ['demo/intrastat_demo.xml'],
     'installable': True,
+    'pre_init_hook': 'pre_init_hook'
 }
