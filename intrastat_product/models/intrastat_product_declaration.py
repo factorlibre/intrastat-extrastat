@@ -465,7 +465,7 @@ class IntrastatProductDeclaration(models.Model):
 
         self._gather_invoices_init()
         domain = self._prepare_invoice_domain()
-        invoices_lines = self.env['account.invoice.line'].search(domain)
+        invoices_lines = self.env['account.invoice.line'].search(domain, order='id')
 
         invoices = {}
         for inv_line in invoices_lines:
