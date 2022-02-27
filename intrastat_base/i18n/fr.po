@@ -238,11 +238,6 @@ msgid "Users Receiving the Intrastat Reminder"
 msgstr "Utilisateurs qui reçoivent le rappel DEB/DES"
 
 #. module: intrastat_base
-#: model:ir.model,name:intrastat_base.model_intrastat_result_view
-msgid "intrastat.result.view"
-msgstr "intrastat.result.view"
-
-#. module: intrastat_base
 #: model:ir.model,name:intrastat_base.model_res_config_settings
 msgid "res.config.settings"
 msgstr "res.config.settings"

@@ -151,14 +151,3 @@ class IntrastatCommon(models.AbstractModel):
                     _('Cannot delete the declaration %s '
                         'because it is in Done state') % self.year_month)
         return super(IntrastatCommon, self).unlink()
-
-
-class IntrastatResultView(models.TransientModel):
-    """
-    Transient Model to display Intrastat Report results
-    """
-    _name = 'intrastat.result.view'
-
-    note = fields.Text(
-        string='Notes', readonly=True,
-        default=lambda self: self._context.get('note'))

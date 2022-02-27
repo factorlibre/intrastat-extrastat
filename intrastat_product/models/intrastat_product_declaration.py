@@ -2,13 +2,17 @@
 # Copyright 2009-2018 Noviat (http://www.noviat.com)
 # @author Alexis de Lattre <alexis.delattre@akretion.com>
 # @author Luc de Meyer <info@noviat.com>
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
+import logging
+import tempfile
+import base64
 
 from odoo import api, fields, models, _
 from odoo.exceptions import RedirectWarning, ValidationError, UserError
 import odoo.addons.decimal_precision as dp
-from datetime import datetime, date
-from dateutil.relativedelta import relativedelta
-import logging
+
+
 _logger = logging.getLogger(__name__)
 
 
@@ -118,7 +122,11 @@ class IntrastatProductDeclaration(models.Model):
         "the parameters become read-only.")
     note = fields.Text(
         string='Notes',
+        help="Deprecated field. Kept for old records.")
+    datas_note = fields.Binary(
+        string='Notes', attachment=True, copy=False,
         help="You can add some comments here if you want.")
+    datas_fname_note = fields.Char('Filename')
     reporting_level = fields.Selection(
         selection='_get_reporting_level',
         string='Reporting Level',
@@ -244,21 +252,20 @@ class IntrastatProductDeclaration(models.Model):
         pce_uom_categ = self._get_uom_refs('pce_uom_categ')
         pce_uom = self._get_uom_refs('pce_uom')
         weight = suppl_unit_qty = 0.0
-
+        note = ''
         if not source_uom:
-            note = "\n" + _(
+            note += "\n" + _(
                 "Missing unit of measure on the line with %d "
                 "product(s) '%s' on invoice '%s'."
             ) % (line_qty, product.name_get()[0][1], invoice.number)
             note += "\n" + _(
                 "Please adjust this line manually.")
-            self._note += note
-            return abs(weight), abs(suppl_unit_qty)
+            return abs(weight), abs(suppl_unit_qty), note
 
         if intrastat_unit_id:
             target_uom = intrastat_unit_id.uom_id
             if not target_uom:
-                note = "\n" + _(
+                note += "\n" + _(
                     "Conversion from Intrastat Supplementary Unit '%s' to "
                     "Unit of Measure is not implemented yet."
                 ) % intrastat_unit_id.name
@@ -267,13 +274,12 @@ class IntrastatProductDeclaration(models.Model):
                     "settings and regenerate the lines or adjust the lines "
                     "with Intrastat Code '%s' manually"
                 ) % hs_code.display_name
-                self._note += note
-                return abs(weight), abs(suppl_unit_qty)
+                return abs(weight), abs(suppl_unit_qty), note
             if target_uom.category_id == source_uom.category_id:
                 suppl_unit_qty = source_uom._compute_quantity(
                     line_qty, target_uom)
             else:
-                note = "\n" + _(
+                note += "\n" + _(
                     "Conversion from unit of measure '%s' to '%s' "
                     "is not implemented yet."
                 ) % (source_uom.name, target_uom.name)
@@ -281,8 +287,7 @@ class IntrastatProductDeclaration(models.Model):
                     "Please correct the unit of measure settings and "
                     "regenerate the lines or adjust the impacted "
                     "lines manually")
-                self._note += note
-                return abs(weight), abs(suppl_unit_qty)
+                return abs(weight), abs(suppl_unit_qty), note
 
         if source_uom == kg_uom:
             weight = line_qty
@@ -290,14 +295,13 @@ class IntrastatProductDeclaration(models.Model):
             weight = source_uom._compute_quantity(line_qty, kg_uom)
         elif source_uom.category_id == pce_uom_categ:
             if not product.weight:  # re-create weight_net ?
-                note = "\n" + _(
+                note += "\n" + _(
                     "Missing weight on product %s."
                 ) % product.name_get()[0][1]
                 note += "\n" + _(
                     "Please correct the product record and regenerate "
                     "the lines or adjust the impacted lines manually")
-                self._note += note
-                return abs(weight), abs(suppl_unit_qty)
+                return abs(weight), abs(suppl_unit_qty), note
             if source_uom == pce_uom:
                 weight = product.weight * line_qty  # product.weight_net
             else:
@@ -307,7 +311,7 @@ class IntrastatProductDeclaration(models.Model):
                 weight = product.weight * \
                     source_uom._compute_quantity(line_qty, pce_uom)
         else:
-            note = "\n" + _(
+            note += "\n" + _(
                 "Conversion from unit of measure '%s' to 'Kg' "
                 "is not implemented yet. It is needed for product '%s'."
             ) % (source_uom.name, product.name_get()[0][1])
@@ -315,10 +319,8 @@ class IntrastatProductDeclaration(models.Model):
                 "Please correct the unit of measure settings and "
                 "regenerate the lines or adjust the impacted lines "
                 "manually")
-            self._note += note
-            return abs(weight), abs(suppl_unit_qty)
-
-        return abs(weight), abs(suppl_unit_qty)
+            return abs(weight), abs(suppl_unit_qty), note
+        return abs(weight), abs(suppl_unit_qty), note
 
     def _get_amount(self, inv_line):
         invoice = inv_line.invoice_id
@@ -397,7 +399,7 @@ class IntrastatProductDeclaration(models.Model):
         pass
 
     def _handle_invoice_accessory_cost(
-            self, invoice, lines_current_invoice,
+            self, lines_current_invoice,
             total_inv_accessory_costs_cc, total_inv_product_cc,
             total_inv_weight):
         """
@@ -458,18 +460,15 @@ class IntrastatProductDeclaration(models.Model):
         """ placeholder for localization modules """
         pass
 
-    def _gather_invoices(self):
-
-        lines = []
+    def _gather_invoices(self, note_temp_file):
         accessory_costs = self.company_id.intrastat_accessory_costs
-
         self._gather_invoices_init()
         domain = self._prepare_invoice_domain()
-        invoices_lines = self.env['account.invoice.line'].search(domain, order='id')
-
+        invoices_lines = self.env['account.invoice.line'].with_context(
+            prefetch_fields=False).search(domain, order='id')
         invoices = {}
         for inv_line in invoices_lines:
-
+            note = ''
             if self.type == 'arrivals' and (
                     (inv_line.invoice_id.type in ('out_invoice', 'in_refund')
                         and inv_line.quantity >= 0) or
@@ -536,12 +535,11 @@ class IntrastatProductDeclaration(models.Model):
             elif inv_line.product_id and self._is_product(inv_line):
                 hs_code = inv_line.product_id.get_hs_code_recursively()
                 if not hs_code:
-                    note = "\n" + _(
+                    note_temp_file.writelines("\n" + _(
                         "Missing H.S. code on product %s. "
                         "This product is present in invoice %s.") % (
                             inv_line.product_id.name_get()[0][1],
-                            inv_line.invoice_id.number)
-                    self._note += note
+                            inv_line.invoice_id.number))
                     continue
             else:
                 _logger.info(
@@ -554,8 +552,9 @@ class IntrastatProductDeclaration(models.Model):
             intrastat_transaction = \
                 self._get_intrastat_transaction(inv_line)
 
-            weight, suppl_unit_qty = self._get_weight_and_supplunits(
-                inv_line, hs_code)
+            weight, suppl_unit_qty, weight_supplunits_note = \
+                self._get_weight_and_supplunits(inv_line, hs_code)
+            note += weight_supplunits_note
             invoices[inv_line.invoice_id.id]['total_inv_weight'] += weight
 
             amount_company_currency = self._get_amount(inv_line)
@@ -564,7 +563,12 @@ class IntrastatProductDeclaration(models.Model):
 
             product_origin_country = self._get_product_origin_country(
                 inv_line)
-
+            if not product_origin_country:
+                note += "\n" + _(
+                    "Missing origin country on product %s. "
+                    "This product is present in invoice %s.") % (
+                        inv_line.product_id.name_get()[0][1],
+                        inv_line.invoice_id.number)
             region = self._get_region(inv_line)
 
             line_vals = {
@@ -595,10 +599,13 @@ class IntrastatProductDeclaration(models.Model):
             if line_vals:
                 invoices[inv_line.invoice_id.id][
                     'lines_current_invoice'].append((line_vals))
-
+            if note:
+                # Keeping the note on cache with too much content may cause
+                # Memory Error
+                note_temp_file.writelines(note)
         for invoice in invoices.keys():
             self._handle_invoice_accessory_cost(
-                invoice, invoices[invoice]['lines_current_invoice'],
+                invoices[invoice]['lines_current_invoice'],
                 invoices[invoice]['total_inv_accessory_costs_cc'],
                 invoices[invoice]['total_inv_product_cc'],
                 invoices[invoice]['total_inv_weight'])
@@ -617,9 +624,8 @@ class IntrastatProductDeclaration(models.Model):
                         % (inv_line.name, inv_line.quantity,
                             inv_line.invoice_id.number))
                     continue
-                lines.append(line_vals)
-
-        return lines
+                self.computation_line_ids = [(0, 0, line_vals)]
+        return True
 
     def _get_uom_refs(self, ref):
         uom_refs = {
@@ -635,7 +641,9 @@ class IntrastatProductDeclaration(models.Model):
         self.ensure_one()
         self.message_post(body=_("Generate Lines from Invoices"))
         self._check_generate_lines()
-        self._note = ''
+        note_temp_file = tempfile.TemporaryFile(mode='w+t')
+        note = '\n\n>>> ' + fields.Datetime.to_string(
+            fields.Datetime.context_timestamp(self, datetime.now())) + '\n'
         if (
                 self.type == 'arrivals' and
                 self.company_id.intrastat_arrivals == 'extended') or (
@@ -647,34 +655,18 @@ class IntrastatProductDeclaration(models.Model):
 
         self.computation_line_ids.unlink()
         self.declaration_line_ids.unlink()
-        lines = self._gather_invoices()
+        self._gather_invoices(note_temp_file)
 
-        if not lines:
+        if 0 == len(self.computation_line_ids):
             self.action = 'nihil'
-            note = "\n" + \
+            note += "\n" + \
                 _("No records found for the selected period !") + '\n' + \
                 _("The Declaration Action has been set to 'nihil'.")
-            self._note += note
-        else:
-            self.write({'computation_line_ids': [(0, 0, x) for x in lines]})
-
-        if self._note:
-            note_header = '\n\n>>> ' + fields.Datetime.to_string(
-                fields.Datetime.context_timestamp(self, datetime.now())) + '\n'
-            self.note = note_header + self._note + (self.note or '')
-            result_view = self.env.ref(
-                'intrastat_base.intrastat_result_view_form')
-            return {
-                'name': _("Generate lines from invoices: results"),
-                'view_type': 'form',
-                'view_mode': 'form',
-                'res_model': 'intrastat.result.view',
-                'view_id': result_view.id,
-                'target': 'new',
-                'context': dict(self._context, note=self._note),
-                'type': 'ir.actions.act_window',
-            }
-
+            note_temp_file.writelines(note)
+        note_temp_file.seek(0)
+        self.datas_note = base64.b64encode(note_temp_file.read().encode('utf-8'))
+        self.datas_fname_note = _("errors.txt")
+        note_temp_file.close()
         return True
 
     @api.model
