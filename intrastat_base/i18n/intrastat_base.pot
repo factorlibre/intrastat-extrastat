@@ -214,11 +214,6 @@ msgid "Users Receiving the Intrastat Reminder"
 msgstr ""
 
 #. module: intrastat_base
-#: model:ir.model,name:intrastat_base.model_intrastat_result_view
-msgid "intrastat.result.view"
-msgstr ""
-
-#. module: intrastat_base
 #: model:ir.model,name:intrastat_base.model_res_config_settings
 msgid "res.config.settings"
 msgstr ""

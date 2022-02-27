@@ -71,7 +71,9 @@
                 </group>
               </page>
               <page string="Notes">
-                <field name="note"/>
+                <field name="datas_note" string="TXT File" filename="datas_fname_note" readonly="1"/>
+                <field name="datas_fname_note" invisible="1"/>
+                <field name="note" nolabel="1"/>
               </page>
             </notebook>
           </sheet>
