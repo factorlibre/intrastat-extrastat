@@ -445,7 +445,10 @@ class IntrastatProductDeclaration(models.Model):
             ('invoice_id.date_invoice', '<=', end_date),
             ('invoice_id.state', 'in', ['open', 'paid']),
             ('invoice_id.intrastat_country', '=', True),
-            ('invoice_id.company_id', '=', self.company_id.id)]
+            ('invoice_id.src_dest_country_id', '!=', self.company_id.country_id.id),
+            ('invoice_id.company_id', '=', self.company_id.id),
+            ('product_id.type', 'in', ('product', 'consu'))
+        ]
         return domain
 
     def _is_product(self, invoice_line):
@@ -459,6 +462,9 @@ class IntrastatProductDeclaration(models.Model):
     def _gather_invoices_init(self):
         """ placeholder for localization modules """
         pass
+
+    def _create_computation_line(self, line_vals):
+        self.computation_line_ids = [(0, 0, line_vals)]
 
     def _gather_invoices(self, note_temp_file):
         accessory_costs = self.company_id.intrastat_accessory_costs
@@ -548,19 +554,15 @@ class IntrastatProductDeclaration(models.Model):
                         inv_line.name,
                         inv_line.quantity, inv_line.invoice_id.number))
                 continue
-
             intrastat_transaction = \
                 self._get_intrastat_transaction(inv_line)
-
             weight, suppl_unit_qty, weight_supplunits_note = \
                 self._get_weight_and_supplunits(inv_line, hs_code)
             note += weight_supplunits_note
             invoices[inv_line.invoice_id.id]['total_inv_weight'] += weight
-
             amount_company_currency = self._get_amount(inv_line)
             invoices[inv_line.invoice_id.id][
                 'total_inv_product_cc'] += amount_company_currency
-
             product_origin_country = self._get_product_origin_country(
                 inv_line)
             if not product_origin_country:
@@ -570,7 +572,6 @@ class IntrastatProductDeclaration(models.Model):
                         inv_line.product_id.name_get()[0][1],
                         inv_line.invoice_id.number)
             region = self._get_region(inv_line)
-
             line_vals = {
                 'parent_id': self.id,
                 'invoice_line_id': inv_line.id,
@@ -593,9 +594,7 @@ class IntrastatProductDeclaration(models.Model):
                 line_vals.update({
                     'transport_id': transport.id,
                 })
-
             self._update_computation_line_vals(inv_line, line_vals)
-
             if line_vals:
                 invoices[inv_line.invoice_id.id][
                     'lines_current_invoice'].append((line_vals))
@@ -603,28 +602,22 @@ class IntrastatProductDeclaration(models.Model):
                 # Keeping the note on cache with too much content may cause
                 # Memory Error
                 note_temp_file.writelines(note)
-        for invoice in invoices.keys():
-            self._handle_invoice_accessory_cost(
-                invoices[invoice]['lines_current_invoice'],
-                invoices[invoice]['total_inv_accessory_costs_cc'],
-                invoices[invoice]['total_inv_product_cc'],
-                invoices[invoice]['total_inv_weight'])
-
-            for line_vals in invoices[invoice]['lines_current_invoice']:
-                if (
-                        not line_vals['amount_company_currency'] and
-                        not
-                        line_vals['amount_accessory_cost_company_currency']):
-                    inv_line = self.env['account.invoice.line'].browse(
-                        line_vals['invoice_line_id'])
+        for invoice_id in invoices.keys():
+            if self.company_id.intrastat_accessory_costs:
+                self._handle_invoice_accessory_cost(
+                    invoices[invoice_id]['lines_current_invoice'],
+                    invoices[invoice_id]['total_inv_accessory_costs_cc'],
+                    invoices[invoice_id]['total_inv_product_cc'],
+                    invoices[invoice_id]['total_inv_weight'])
+            for line_vals in invoices[invoice_id]['lines_current_invoice']:
+                if not line_vals['amount_company_currency'] and (
+                        not line_vals['amount_accessory_cost_company_currency']):
                     _logger.info(
-                        'Skipping invoice line %s qty %s '
-                        'of invoice %s. Reason: price_subtotal = 0 '
-                        'and accessory costs = 0'
-                        % (inv_line.name, inv_line.quantity,
-                            inv_line.invoice_id.number))
+                        'Skipping invoice line %d of invoice %d. '
+                        'Reason: price_subtotal = 0 and accessory costs = 0'
+                        % (line_vals['invoice_line_id'], invoice_id))
                     continue
-                self.computation_line_ids = [(0, 0, line_vals)]
+                self._create_computation_line(line_vals)
         return True
 
     def _get_uom_refs(self, ref):
@@ -858,7 +851,7 @@ class IntrastatProductComputationLine(models.Model):
         'account.invoice', related='invoice_line_id.invoice_id',
         string='Invoice', readonly=True)
     declaration_line_id = fields.Many2one(
-        'intrastat.product.declaration.line',
+        'intrastat.product.declaration.line', index=True,
         string='Declaration Line', readonly=True)
     src_dest_country_id = fields.Many2one(
         'res.country', string='Country',
