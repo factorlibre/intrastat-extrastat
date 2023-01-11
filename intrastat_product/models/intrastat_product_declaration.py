@@ -241,16 +241,16 @@ class IntrastatProductDeclaration(models.Model):
             elif invoice.type == 'in_refund':
                 return company.intrastat_transaction_in_refund
 
-    def _get_weight_and_supplunits(self, inv_line, hs_code):
+    def _get_weight_and_supplunits(self, inv_line, hs_code, uom_refs):
         line_qty = inv_line.quantity
         product = inv_line.product_id
         invoice = inv_line.invoice_id
         intrastat_unit_id = hs_code.intrastat_unit_id
         source_uom = inv_line.uom_id
-        weight_uom_categ = self._get_uom_refs('weight_uom_categ')
-        kg_uom = self._get_uom_refs('kg_uom')
-        pce_uom_categ = self._get_uom_refs('pce_uom_categ')
-        pce_uom = self._get_uom_refs('pce_uom')
+        weight_uom_categ = uom_refs['weight_uom_categ']
+        kg_uom = uom_refs['kg_uom']
+        pce_uom_categ = uom_refs['pce_uom_categ']
+        pce_uom = uom_refs['pce_uom']
         weight = suppl_unit_qty = 0.0
         note = ''
         if not source_uom:
@@ -347,23 +347,23 @@ class IntrastatProductDeclaration(models.Model):
         otherwise, get the sale order, which is linked to the warehouse.
 
         If none found, get the company's default intrastat region.
-
         """
         region = False
         inv_type = inv_line.invoice_id.type
         if inv_type in ('in_invoice', 'in_refund'):
-            po_lines = self.env['purchase.order.line'].search(
-                [('invoice_lines', 'in', inv_line.id)])
-            if po_lines:
-                if po_lines[0].move_ids:
-                    region = po_lines[0].move_ids[0].location_dest_id\
-                        .get_intrastat_region()
+            po_line = self.env['purchase.order.line'].with_context(
+                prefetch_fields=False
+            ).search([('invoice_lines', 'in', inv_line.id)], order="id", limit=1)
+            if po_line and po_line.move_ids:
+                region = po_line.move_ids[0].location_dest_id.get_intrastat_region()
         elif inv_type in ('out_invoice', 'out_refund'):
-            so_lines = self.env['sale.order.line'].search(
-                [('invoice_lines', 'in', inv_line.id)])
-            if so_lines:
-                so = so_lines[0].order_id
-                region = so.warehouse_id.region_id
+            region = inv_line.invoice_id.src_dest_region_id
+            if not region:
+                so_line = self.env['sale.order.line'].with_context(
+                    prefetch_fields=False
+                ).search([('invoice_lines', 'in', inv_line.id)], order="id", limit=1)
+                if so_line:
+                    region = so_line.order_id.warehouse_id.region_id
         if not region:
             if self.company_id.intrastat_region_id:
                 region = self.company_id.intrastat_region_id
@@ -473,6 +473,7 @@ class IntrastatProductDeclaration(models.Model):
         invoices_lines = self.env['account.invoice.line'].with_context(
             prefetch_fields=False).search(domain, order='id')
         invoices = {}
+        uom_refs = self._get_uom_refs()
         for inv_line in invoices_lines:
             note = ''
             if self.type == 'arrivals' and (
@@ -489,12 +490,11 @@ class IntrastatProductDeclaration(models.Model):
                 continue
 
             invoices.setdefault(inv_line.invoice_id.id, {
-                    'lines_current_invoice': [],
-                    'total_inv_accessory_costs_cc': 0.0, # in company currency
-                    'total_inv_product_cc': 0.0,  # in company currency
-                    'total_inv_weight': 0.0,
-                })
-
+                'lines_current_invoice': [],
+                'total_inv_accessory_costs_cc': 0.0,  # in company currency
+                'total_inv_product_cc': 0.0,  # in company currency
+                'total_inv_weight': 0.0,
+            })
             if (
                     accessory_costs and
                     inv_line.product_id and
@@ -557,7 +557,7 @@ class IntrastatProductDeclaration(models.Model):
             intrastat_transaction = \
                 self._get_intrastat_transaction(inv_line)
             weight, suppl_unit_qty, weight_supplunits_note = \
-                self._get_weight_and_supplunits(inv_line, hs_code)
+                self._get_weight_and_supplunits(inv_line, hs_code, uom_refs)
             note += weight_supplunits_note
             invoices[inv_line.invoice_id.id]['total_inv_weight'] += weight
             amount_company_currency = self._get_amount(inv_line)
@@ -620,19 +620,19 @@ class IntrastatProductDeclaration(models.Model):
                 self._create_computation_line(line_vals)
         return True
 
-    def _get_uom_refs(self, ref):
-        uom_refs = {
+    def _get_uom_refs(self):
+        """Refactored to improve performance, call it only once on _gather_invoices"""
+        return {
             'weight_uom_categ': self.env.ref('product.product_uom_categ_kgm'),
             'kg_uom': self.env.ref('product.product_uom_kgm'),
             'pce_uom_categ': self.env.ref('product.product_uom_categ_unit'),
             'pce_uom': self.env.ref('product.product_uom_unit')
         }
-        return uom_refs[ref]
 
     @api.multi
     def action_gather(self):
         self.ensure_one()
-        self.message_post(body=_("Generate Lines from Invoices"))
+
         self._check_generate_lines()
         note_temp_file = tempfile.TemporaryFile(mode='w+t')
         note = '\n\n>>> ' + fields.Datetime.to_string(
@@ -730,7 +730,6 @@ class IntrastatProductDeclaration(models.Model):
         """ generate declaration lines """
         self.ensure_one()
         assert self.valid, 'Computation lines are not valid'
-        self.message_post(body=_("Generate Declaration Lines"))
         # Delete existing declaration lines
         self.declaration_line_ids.unlink()
         # Regenerate declaration lines from computation lines
@@ -744,16 +743,17 @@ class IntrastatProductDeclaration(models.Model):
         ipdl = self.declaration_line_ids
         for cl_lines in list(dl_group.values()):
             vals = self._prepare_declaration_line(cl_lines)
-            declaration_line = ipdl.create(vals)
+            declaration_line = ipdl.with_context(recompute=False).create(vals)
             for cl in cl_lines:
-                cl.write({'declaration_line_id': declaration_line.id})
+                cl.with_context(recompute=False).write({
+                    'declaration_line_id': declaration_line.id})
         return True
 
     @api.multi
     def generate_xml(self):
         """ generate the INTRASTAT Declaration XML file """
         self.ensure_one()
-        self.message_post(body=_("Generate XML Declaration File"))
+
         self._check_generate_xml()
         self._unlink_attachments()
         xml_string = self._generate_xml()
