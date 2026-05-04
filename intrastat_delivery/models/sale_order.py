@@ -47,6 +47,8 @@ class SaleOrder(models.Model):
         ret = super()._action_confirm()
         for order in self:
             incoterm = order._get_default_incoterm()
+            if not incoterm:
+                continue
             intr_trans = (
                 order.carrier_id.intrastat_transport_id if order.carrier_id else False
             )
