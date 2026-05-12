@@ -812,19 +812,20 @@ class IntrastatProductDeclaration(models.Model):
     def _should_include_zero_price_line(self, line_vals):
         """Check if a zero-price line should be included in the declaration.
 
-        Returns True if the line should be included, False if it should be
-        skipped. When included, updates line values with transaction 23
-        and the product's sale price.
+        A zero-price line is detected from the underlying invoice line's
+        price_subtotal (the source-of-truth before any downstream module
+        mutates line_vals with accessory cost prorating). Returns True if
+        the line should be included, False if it should be skipped. When
+        included, applies transaction 23 and the product's sale price on
+        top of whatever the accessory cost handling may have already set.
         """
+        inv_line = self.env["account.move.line"].browse(line_vals["invoice_line_id"])
         if (
-            line_vals["amount_company_currency"]
+            inv_line.price_subtotal
             or line_vals["amount_accessory_cost_company_currency"]
         ):
             return True
         if not self.company_id.intrastat_include_zero_price_lines:
-            inv_line = self.env["account.move.line"].browse(
-                line_vals["invoice_line_id"]
-            )
             _logger.info(
                 "Skipping invoice line %s qty %s "
                 "of invoice %s. Reason: price_subtotal = 0 "
@@ -842,16 +843,24 @@ class IntrastatProductDeclaration(models.Model):
 
         When zero-price lines are included (e.g. warranty replacements),
         they must use transaction code 23 and the product's sale price
-        as fiscal value, per EU Intrastat regulation.
+        as both fiscal and statistical value, per EU Intrastat regulation.
+
+        The sale price is added on top of whatever amount/statistical
+        downstream modules have already set. For instance, when
+        l10n_es_intrastat_statistic_added_cost is installed the
+        statistical value already carries qty * volume * statistic_added_cost,
+        so adding the sale price here yields the full client formula
+        (qty * volume * added_cost) + (list_price * qty).
         """
         tr_23 = self.env.ref("intrastat_product.intrastat_transaction_23")
         line_vals["transaction_id"] = tr_23.id
         inv_line = self.env["account.move.line"].browse(line_vals["invoice_line_id"])
         product = inv_line.product_id
         if product and product.list_price:
-            line_vals["amount_company_currency"] = (
-                product.list_price * inv_line.quantity
-            )
+            sale_value = product.list_price * inv_line.quantity
+            line_vals["amount_company_currency"] += sale_value
+            if "statistical_value_company_currency" in line_vals:
+                line_vals["statistical_value_company_currency"] += sale_value
 
     def _prepare_html_note(self, notedict, key2label):
         note = ""

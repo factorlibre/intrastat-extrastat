@@ -3,7 +3,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 from psycopg2 import IntegrityError
 
-from odoo import Command
+from odoo import Command, fields
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests import Form
 from odoo.tests.common import TransactionCase
@@ -166,11 +166,13 @@ class TestIntrastatProduct(IntrastatProductCommon):
         product_c3po = self.product_c3po.product_variant_ids[0]
         list_price = product_c3po.list_price
         self.assertTrue(list_price, "Product must have a list_price for this test")
+        today = fields.Date.context_today(self.declaration_obj)
         invoice = self.env["account.move"].create(
             {
                 "move_type": "out_invoice",
                 "partner_id": self.partner.id,
                 "fiscal_position_id": self.position.id,
+                "invoice_date": today,
                 "invoice_line_ids": [
                     Command.create(
                         {
@@ -188,6 +190,8 @@ class TestIntrastatProduct(IntrastatProductCommon):
             {
                 "company_id": self.demo_company.id,
                 "declaration_type": "dispatches",
+                "year": str(today.year),
+                "month": str(today.month).zfill(2),
             }
         )
         declaration.action_gather()
@@ -199,10 +203,105 @@ class TestIntrastatProduct(IntrastatProductCommon):
         self.assertEqual(zero_lines.transaction_id, tr_23)
         self.assertEqual(zero_lines.amount_company_currency, list_price * 3)
 
-    def test_zero_price_lines_excluded_by_default(self):
-        """Zero price lines must be excluded when config is disabled."""
-        self.demo_company.intrastat_include_zero_price_lines = False
+    def test_zero_price_lines_statistical_value(self):
+        """When line_vals carries statistical_value_company_currency (added by
+        downstream l10n_es_intrastat_accessory_costs), the zero-price handler
+        also updates it with product's sale price."""
         product_c3po = self.product_c3po.product_variant_ids[0]
+        list_price = product_c3po.list_price
+        self.assertTrue(list_price, "Product must have a list_price for this test")
+        invoice = self.env["account.move"].create(
+            {
+                "move_type": "out_invoice",
+                "partner_id": self.partner.id,
+                "fiscal_position_id": self.position.id,
+                "invoice_line_ids": [
+                    Command.create(
+                        {
+                            "product_id": product_c3po.id,
+                            "quantity": 4,
+                            "price_unit": 0.0,
+                            "name": "Warranty replacement",
+                        },
+                    )
+                ],
+            }
+        )
+        invoice.action_post()
+        declaration = self.declaration_obj.create(
+            {
+                "company_id": self.demo_company.id,
+                "declaration_type": "dispatches",
+            }
+        )
+        line_vals = {
+            "invoice_line_id": invoice.invoice_line_ids[0].id,
+            "amount_company_currency": 0.0,
+            "statistical_value_company_currency": 0.0,
+        }
+        declaration._update_zero_price_line_vals(line_vals)
+        self.assertEqual(line_vals["amount_company_currency"], list_price * 4)
+        self.assertEqual(
+            line_vals["statistical_value_company_currency"], list_price * 4
+        )
+
+    def test_zero_price_lines_with_preexisting_statistical(self):
+        """When downstream modules (e.g. l10n_es_intrastat_statistic_added_cost)
+        have already added a volumetric portion to statistical_value before
+        this handler runs, the sale price is added on top — preserving the
+        client's literal formula (qty * volume * added_cost) + (list_price * qty).
+        Fiscal value receives the sale price added to whatever the accessory
+        cost handler prorated; the two fields can differ if amount has the
+        transport pro_rata and statistical has the statistic_added_cost portion."""
+        product_c3po = self.product_c3po.product_variant_ids[0]
+        list_price = product_c3po.list_price
+        invoice = self.env["account.move"].create(
+            {
+                "move_type": "out_invoice",
+                "partner_id": self.partner.id,
+                "fiscal_position_id": self.position.id,
+                "invoice_line_ids": [
+                    Command.create(
+                        {
+                            "product_id": product_c3po.id,
+                            "quantity": 2,
+                            "price_unit": 0.0,
+                            "name": "Warranty replacement",
+                        },
+                    )
+                ],
+            }
+        )
+        invoice.action_post()
+        declaration = self.declaration_obj.create(
+            {
+                "company_id": self.demo_company.id,
+                "declaration_type": "dispatches",
+            }
+        )
+        amount_initial = 50.0
+        statistical_initial = 30.0
+        line_vals = {
+            "invoice_line_id": invoice.invoice_line_ids[0].id,
+            "amount_company_currency": amount_initial,
+            "statistical_value_company_currency": statistical_initial,
+        }
+        declaration._update_zero_price_line_vals(line_vals)
+        sale_value = list_price * 2
+        self.assertEqual(
+            line_vals["amount_company_currency"], amount_initial + sale_value
+        )
+        self.assertEqual(
+            line_vals["statistical_value_company_currency"],
+            statistical_initial + sale_value,
+        )
+
+    def test_zero_price_lines_statistical_value_absent(self):
+        """When line_vals does not carry statistical_value_company_currency
+        (no downstream module that adds the field), the handler skips it
+        without crashing."""
+        product_c3po = self.product_c3po.product_variant_ids[0]
+        list_price = product_c3po.list_price
         invoice = self.env["account.move"].create(
             {
                 "move_type": "out_invoice",
@@ -225,6 +324,46 @@ class TestIntrastatProduct(IntrastatProductCommon):
             {
                 "company_id": self.demo_company.id,
                 "declaration_type": "dispatches",
+            }
+        )
+        line_vals = {
+            "invoice_line_id": invoice.invoice_line_ids[0].id,
+            "amount_company_currency": 0.0,
+        }
+        declaration._update_zero_price_line_vals(line_vals)
+        self.assertEqual(line_vals["amount_company_currency"], list_price)
+        self.assertNotIn("statistical_value_company_currency", line_vals)
+
+    def test_zero_price_lines_excluded_by_default(self):
+        """Zero price lines must be excluded when config is disabled."""
+        self.demo_company.intrastat_include_zero_price_lines = False
+        product_c3po = self.product_c3po.product_variant_ids[0]
+        today = fields.Date.context_today(self.declaration_obj)
+        invoice = self.env["account.move"].create(
+            {
+                "move_type": "out_invoice",
+                "partner_id": self.partner.id,
+                "fiscal_position_id": self.position.id,
+                "invoice_date": today,
+                "invoice_line_ids": [
+                    Command.create(
+                        {
+                            "product_id": product_c3po.id,
+                            "quantity": 1,
+                            "price_unit": 0.0,
+                            "name": "Warranty replacement",
+                        },
+                    )
+                ],
+            }
+        )
+        invoice.action_post()
+        declaration = self.declaration_obj.create(
+            {
+                "company_id": self.demo_company.id,
+                "declaration_type": "dispatches",
+                "year": str(today.year),
+                "month": str(today.month).zfill(2),
             }
         )
         declaration.action_gather()
