@@ -330,6 +330,19 @@ class IntrastatProductDeclaration(models.Model):
                 self.company_id.currency_id)
         return abs(amount)
 
+    def _prepare_region_order_line_domain(self, inv_line):
+        """Domain of the order line lookup that resolves the region.
+
+        The declaration's own company rules: the region of a declaration of
+        company X must come from an order of X. Today the record rule grants
+        that as a side effect; a caller that elevates permissions loses it,
+        and Odoo 11 has no _check_company preventing the cross-company link.
+        """
+        return [
+            ('invoice_lines', 'in', inv_line.id),
+            ('company_id', '=', self.company_id.id),
+        ]
+
     def _get_region(self, inv_line):
         """
         For supplier invoices/refunds: if the invoice line is linked
@@ -353,7 +366,9 @@ class IntrastatProductDeclaration(models.Model):
         if inv_type in ('in_invoice', 'in_refund'):
             po_line = self.env['purchase.order.line'].with_context(
                 prefetch_fields=False
-            ).search([('invoice_lines', 'in', inv_line.id)], order="id", limit=1)
+            ).search(
+                self._prepare_region_order_line_domain(inv_line),
+                order="id", limit=1)
             if po_line and po_line.move_ids:
                 region = po_line.move_ids[0].location_dest_id.get_intrastat_region()
         elif inv_type in ('out_invoice', 'out_refund'):
@@ -361,7 +376,9 @@ class IntrastatProductDeclaration(models.Model):
             if not region:
                 so_line = self.env['sale.order.line'].with_context(
                     prefetch_fields=False
-                ).search([('invoice_lines', 'in', inv_line.id)], order="id", limit=1)
+                ).search(
+                    self._prepare_region_order_line_domain(inv_line),
+                    order="id", limit=1)
                 if so_line:
                     region = so_line.order_id.warehouse_id.region_id
         if not region:
